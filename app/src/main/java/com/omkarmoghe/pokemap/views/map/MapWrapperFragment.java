@@ -6,6 +6,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.location.Location;
 import android.os.Bundle;
+import android.os.Handler;
 import android.support.annotation.Nullable;
 import android.support.design.widget.FloatingActionButton;
 import android.support.design.widget.Snackbar;
@@ -37,15 +38,18 @@ import com.omkarmoghe.pokemap.R;
 import com.omkarmoghe.pokemap.controllers.app_preferences.PokemapAppPreferences;
 import com.omkarmoghe.pokemap.controllers.app_preferences.PokemapSharedPreferences;
 import com.omkarmoghe.pokemap.controllers.map.LocationManager;
+import com.omkarmoghe.pokemap.controllers.net.NianticManager;
 import com.omkarmoghe.pokemap.models.events.CatchablePokemonEvent;
 import com.omkarmoghe.pokemap.models.events.ClearMapEvent;
 import com.omkarmoghe.pokemap.models.events.PokestopsEvent;
 import com.omkarmoghe.pokemap.models.events.SearchInPosition;
 import com.omkarmoghe.pokemap.models.map.PokemonMarkerExtended;
 import com.omkarmoghe.pokemap.models.map.PokestopMarkerExtended;
-import com.omkarmoghe.pokemap.models.map.SearchParams;
 import com.pokegoapi.api.map.fort.Pokestop;
 import com.pokegoapi.api.map.pokemon.CatchablePokemon;
+import com.pokegoapi.api.map.pokemon.EncounterResult;
+import com.pokegoapi.exceptions.LoginFailedException;
+import com.pokegoapi.exceptions.RemoteServerException;
 
 import org.greenrobot.eventbus.EventBus;
 import org.greenrobot.eventbus.Subscribe;
@@ -59,6 +63,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+
+import POGOProtos.Data.PokemonDataOuterClass;
+import POGOProtos.Enums.PokemonIdOuterClass;
 
 /**
  * A simple {@link Fragment} subclass.
@@ -87,6 +94,64 @@ public class MapWrapperFragment extends Fragment implements OnMapReadyCallback,
     public static Snackbar pokeSnackbar;
     public static int pokemonFound = 0;
     public static int positionNum = 0;
+    private Handler mHandler = new Handler();
+
+    GoogleMap.OnMarkerClickListener mOnMarkerClickListener = new GoogleMap.OnMarkerClickListener() {
+        @Override
+        public boolean onMarkerClick(final Marker marker) {
+            for (final Map.Entry<String, PokemonMarkerExtended> pokemarker : markerList.entrySet()) {
+                if (marker.equals(pokemarker.getValue().getMarker())) {
+                    final CatchablePokemon clickedCatchablePokemon = pokemarker.getValue().getCatchablePokemon();
+                    final PokemonIdOuterClass.PokemonId pokemonId = clickedCatchablePokemon.getPokemonId();
+                    final double latitude = clickedCatchablePokemon.getLatitude();
+                    final double longitude = clickedCatchablePokemon.getLongitude();
+                    final LatLng p = marker.getPosition();
+
+                    new Thread(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                CatchablePokemonEvent retryCatchablePokemon = NianticManager.getInstance().getCatchablePokemon(p.latitude, p.longitude, 0D);
+                                if (retryCatchablePokemon == null) {
+                                    return;
+                                }
+                                for (CatchablePokemon catchablePokemon : retryCatchablePokemon.getCatchablePokemon()) {
+                                    if (catchablePokemon.getLongitude() == longitude &&
+                                            catchablePokemon.getLatitude() == latitude &&
+                                            pokemonId == catchablePokemon.getPokemonId()) {
+                                        encounterPokemon(catchablePokemon);
+                                    }
+                                }
+                            } catch (LoginFailedException | RemoteServerException e) {
+                                e.printStackTrace();
+                            }
+                        }
+
+                        void encounterPokemon(CatchablePokemon clickedCatchablePokemon) throws LoginFailedException, RemoteServerException {
+                            EncounterResult encounterResult = clickedCatchablePokemon.encounterPokemon();
+                            if (encounterResult.wasSuccessful() && encounterResult.getWildPokemon().hasPokemonData()) {
+                                final PokemonDataOuterClass.PokemonData data = encounterResult.getWildPokemon().getPokemonData();
+                                final StringBuilder sb = new StringBuilder();
+                                sb.append("cp : " + data.getCp());
+                                sb.append(",atk : " + data.getIndividualAttack());
+                                sb.append(",def : " + data.getIndividualDefense());
+                                sb.append(",str : " + data.getIndividualStamina());
+                                sb.append(",IV ratio : " + String.format("%.2f",
+                                        (data.getIndividualAttack() + data.getIndividualDefense() + data.getIndividualStamina()) / 45.0));
+                                mHandler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        pokeSnackbar.setText(sb.toString()).show();
+                                    }
+                                });
+                            }
+                        }
+                    }).start();
+                }
+            }
+            return false;
+        }
+    };
 
     public MapWrapperFragment() {
         // Required empty public constructor
@@ -197,6 +262,7 @@ public class MapWrapperFragment extends Fragment implements OnMapReadyCallback,
             mGoogleMap.setMyLocationEnabled(true);
             mGoogleMap.animateCamera(CameraUpdateFactory.newLatLngZoom(
                     new LatLng(mLocation.getLatitude(), mLocation.getLongitude()), 15));
+            mGoogleMap.setOnMarkerClickListener(mOnMarkerClickListener);
         } else {
             showLocationFetchFailed();
         }
@@ -226,7 +292,6 @@ public class MapWrapperFragment extends Fragment implements OnMapReadyCallback,
                 userSelectedPositionCircles.clear();
             }
         }
-
     }
 
     private void updateMarkers() {
@@ -515,6 +580,5 @@ public class MapWrapperFragment extends Fragment implements OnMapReadyCallback,
             showMapNotInitializedError();
         }
     }
-
 }
 
